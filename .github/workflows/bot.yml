@@ -1,0 +1,155 @@
+name: Discord Bot CI
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 * * * *'  # Runs every hour on the hour
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Download Tesseract packages
+        run: |
+          sudo apt-get update -y
+          apt download tesseract-ocr libtesseract5 liblept5 tesseract-ocr-eng libgif7 libjpeg8 libpng16-16t64 libtiff6 libwebp7 libopenjp2-7 zlib1g libarchive13t64 libcurl4t64 libsharpyuv0
+
+      - name: Extract packages
+        run: |
+          mkdir tesseract-local
+          for deb in *.deb; do
+            dpkg-deb -x $deb tesseract-local
+          done
+
+      - name: Debug and fix library symlinks
+        run: |
+          cd tesseract-local/usr/lib/x86_64-linux-gnu
+          echo "Listing extracted libraries:"
+          ls -l libgif*
+          if [ -f "libgif.so.7.0.1" ] && [ ! -e "libgif.so.7" ]; then
+            ln -sf libgif.so.7.0.1 libgif.so.7
+            echo "Created symlink: libgif.so.7 -> libgif.so.7.0.1"
+          elif [ ! -f "libgif.so.7.0.1" ]; then
+            echo "Error: libgif.so.7.0.1 not found in extracted files"
+          fi
+          echo "Post-fix listing:"
+          ls -l libgif*
+
+      - name: Cache Tesseract local installation
+        uses: actions/cache@v3
+        with:
+          path: tesseract-local
+          key: ${{ runner.os }}-tesseract-v2
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Set up virtual environment
+        run: |
+          # Delete the existing virtual environment if it exists
+          rm -rf .venv
+
+          # Create a fresh virtual environment
+          python -m venv .venv
+
+          # Activate the virtual environment
+          . .venv/bin/activate
+
+          # Force install pip using get-pip.py
+          curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+          python get-pip.py --force-reinstall
+          
+          # Verify pip installation
+          pip --version
+
+          # Upgrade pip and install dependencies
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Cache virtual environment
+        uses: actions/cache@v3
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ hashFiles('requirements.txt') }}
+
+  bot:
+    needs: setup
+    runs-on: ubuntu-latest
+    concurrency:
+      group: discord-bot
+      cancel-in-progress: true
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Restore Tesseract cache
+        uses: actions/cache/restore@v3
+        with:
+          path: tesseract-local
+          key: ${{ runner.os }}-tesseract-v2
+
+      - name: Restore virtual environment cache
+        uses: actions/cache/restore@v3
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ hashFiles('requirements.txt') }}
+
+      - name: Set up virtual environment
+        run: |
+          # Recreate the virtual environment if cache wasn't restored
+          if [ ! -d ".venv" ]; then
+            python -m venv .venv
+            . .venv/bin/activate
+            pip install -r requirements.txt
+          else
+            . .venv/bin/activate
+          fi
+
+          # Verify packages
+          pip list
+
+      - name: Check cached libraries
+        run: |
+          echo "Listing cached libraries in bot job:"
+          ls -l $GITHUB_WORKSPACE/tesseract-local/usr/lib/x86_64-linux-gnu/libgif*
+          echo "LD_LIBRARY_PATH contents:"
+          ls -l $GITHUB_WORKSPACE/tesseract-local/usr/lib/x86_64-linux-gnu/
+
+      - name: Set environment variables for Tesseract
+        run: |
+          TESSDATA_DIR=$(find $GITHUB_WORKSPACE/tesseract-local -type d -name tessdata)
+          echo "TESSDATA_PREFIX=$TESSDATA_DIR" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tesseract-local/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH set to: $LD_LIBRARY_PATH"
+
+      - name: Verify Tesseract
+        run: |
+          export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tesseract-local/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+          $GITHUB_WORKSPACE/tesseract-local/usr/bin/tesseract --version
+
+      - name: Run Discord bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          . .venv/bin/activate
+          export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tesseract-local/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+          python bot.py
