@@ -1,0 +1,20 @@
+# Discord API library
+discord.py>=2.3.2
+
+# Asynchronous HTTP requests
+aiohttp>=3.9.5
+
+# Image processing
+Pillow>=10.3.0
+
+# OCR (requires Tesseract OCR to be installed on the system)
+pytesseract>=0.3.10
+
+# Numerical operations (used with OpenCV)
+numpy>=1.26.4
+
+# Advanced image processing with OpenCV
+opencv-python>=4.9.0
+
+# Web scraping for Google search results
+beautifulsoup4>=4.12.3
